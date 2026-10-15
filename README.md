@@ -227,7 +227,7 @@ How the target is applied:
 - **Malformed messages are ignored, with a warning, and do not refresh the expiry.** That covers a wrong size, non-finite values, and a mask that is not an integer in 0..15.
 - **Without messages** the behaviour is exactly the one with the parameters alone.
 
-Used by `nereo_mission_bridge` (thesis mission software) instead of setting the parameters, which the node reads only once a second.
+Used by `nereo_mission_bridge` (thesis mission software, [`Davide-Colabella/Tesi-Magistrale`](https://github.com/Davide-Colabella/Tesi-Magistrale)) instead of setting the parameters, which the node reads only once a second. The topic exists only on branch `tesi-davide` of the fork [`Davide-Colabella/ros2_controller_tuning_aid`](https://github.com/Davide-Colabella/ros2_controller_tuning_aid/tree/tesi-davide); the bridge needs the `tesi-davide` branch of [`Davide-Colabella/nereo_ros2_code`](https://github.com/Davide-Colabella/nereo_ros2_code/tree/tesi-davide) as well.
 
 ```bash
 # depth 2.5 m and yaw 0.3 rad for 0.5 s
