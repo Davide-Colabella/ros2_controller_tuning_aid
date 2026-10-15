@@ -1,6 +1,6 @@
 # Nereo Controller Tuning Aid
 
-ROS 2 (Humble) workspace containing the **PID / state-space controller** for the **Nereo** ROV by PoliTOcean.
+ROS 2 (Jazzy) workspace containing the **PID / state-space controller** for the **Nereo** ROV by PoliTOcean.
 
 This repo is meant to live **next to** [`nereo_ros2_code`](https://github.com/PoliTOcean/nereo_ros2_code) — the workstation launch file in `gui_pkg` automatically picks up this overlay (`AMENT_PREFIX_PATH` is prepended at launch time) and spawns the controller node alongside the GUI.
 

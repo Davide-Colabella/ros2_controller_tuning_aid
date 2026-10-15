@@ -19,14 +19,10 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
-# Include directories
-include_directories(
-  ${EIGEN3_INCLUDE_DIR}
-)
-
 # Add executable
 add_executable(nereo_controller_node src/nereo_controller_node.cpp)
-target_link_libraries(nereo_controller_node ${EIGEN3_LIBRARIES})
+# Eigen through its imported target: EIGEN3_INCLUDE_DIR is gone in Eigen 5
+target_link_libraries(nereo_controller_node Eigen3::Eigen)
 
 # Target dependencies
 ament_target_dependencies(nereo_controller_node

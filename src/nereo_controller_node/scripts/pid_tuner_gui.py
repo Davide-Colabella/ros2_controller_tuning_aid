@@ -761,7 +761,7 @@ def main() -> None:
     node.spin_in_tk()
     node.root.mainloop()
     node.destroy_node()
-    rclpy.shutdown()
+    rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
