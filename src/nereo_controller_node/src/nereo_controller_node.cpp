@@ -10,6 +10,7 @@
 #include <array>
 #include <vector>
 #include <Eigen/Geometry>
+#include "nereo_controller_node/controller_target.hpp"
 
 // Define ControlSystem class for CS controller
 class ControlSystem
@@ -145,6 +146,23 @@ public:
         this->declare_parameter("setpoint_pitch", 0.0);
         this->declare_parameter("setpoint_yaw", 0.0);
 
+        // /controller/target: a fresh target overrides the manual setpoint
+        // parameters on its axes; after target_timeout without messages the
+        // axes go back to the parameters.
+        rcl_interfaces::msg::ParameterDescriptor target_timeout_descriptor;
+        target_timeout_descriptor.description =
+            "seconds after the last /controller/target message before its "
+            "axes go back to the setpoint parameters";
+        rcl_interfaces::msg::FloatingPointRange target_timeout_range;
+        target_timeout_range.from_value = 0.05;
+        target_timeout_range.to_value = 10.0;
+        target_timeout_range.step = 0.0;
+        target_timeout_descriptor.floating_point_range.push_back(
+            target_timeout_range);
+        this->declare_parameter("target_timeout", 0.5,
+            target_timeout_descriptor);
+        target_.setTimeout(this->get_parameter("target_timeout").as_double());
+
         // CS Controller parameters
         this->declare_parameter("cs_kx0", std::vector<double>{0.0, 0.0});
         this->declare_parameter("cs_kx1", std::vector<double>{0.0, 0.0});
@@ -186,6 +204,11 @@ public:
             "/barometer_depth", sensor_qos,
             std::bind(&NereoControllerNode::depthCallback, this,
                 std::placeholders::_1));
+
+        target_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+            "/controller/target", 10,
+            std::bind(&NereoControllerNode::targetCallback, this,
+                std::placeholders::_1));
             
         // Timer for parameter checking
         param_timer_ = this->create_wall_timer(
@@ -218,6 +241,7 @@ private:
     rclcpp::Subscription<nereo_interfaces::msg::CommandVelocity>::SharedPtr cmd_vel_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr depth_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr target_sub_;
     rclcpp::TimerBase::SharedPtr param_timer_;
     
     // Control mode and PID controllers
@@ -243,6 +267,11 @@ private:
     std::array<uint8_t, 4> last_cmd_vel_neq_0_ = {1, 1, 1, 1};
     bool first_update_ = true;
     std::array<bool, 4> manual_setpoint_ = {false, false, false, false}; // depth, roll, pitch, yaw
+
+    // /controller/target and the axes it drove at the last control step
+    ControllerTarget target_;
+    uint8_t target_mask_ = 0;
+    bool targetManaged(size_t axis) const { return (target_mask_ >> axis) & 1U; }
     
     // Latest sensor data
     Eigen::Quaternionf current_orientation_ = Eigen::Quaternionf::Identity();
@@ -283,6 +312,8 @@ private:
             }
         }
         
+        target_.setTimeout(this->get_parameter("target_timeout").as_double());
+
         // Check per-axis manual setpoint modes
         const std::array<std::string, 4> manual_keys = {"manual_setpoint_depth", "manual_setpoint_roll", "manual_setpoint_pitch", "manual_setpoint_yaw"};
         const std::array<std::string, 4> sp_keys = {"setpoint_depth", "setpoint_roll", "setpoint_pitch", "setpoint_yaw"};
@@ -294,7 +325,7 @@ private:
                 manual_setpoint_[i] = new_manual;
                 RCLCPP_INFO(this->get_logger(), "Manual setpoint %s: %s", axis_names[i].c_str(), new_manual ? "ENABLED" : "DISABLED");
             }
-            if (manual_setpoint_[i]) {
+            if (manual_setpoint_[i] && !targetManaged(i)) {
                 float sp = static_cast<float>(this->get_parameter(sp_keys[i]).as_double());
                 if (setpoints_[i] != sp) {
                     setpoints_[i] = sp;
@@ -566,6 +597,51 @@ private:
             "Depth data received: %.2f m", msg->data);
     }
 
+    void targetCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+        if (!target_.update(msg->data, this->now().seconds())) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "Malformed /controller/target ignored: expected [depth, roll, pitch, "
+                "yaw, mask] with finite values and mask an integer in 0..15");
+        }
+    }
+
+    // Applies /controller/target to the setpoints before each control step.
+    // Axes in the fresh target take its value; an axis that leaves the
+    // target (expiry or mask) goes back to the parameters: the manual
+    // setpoint if enabled, otherwise it holds the current measurement, as
+    // the stick capture would.
+    void applyTarget() {
+        const uint8_t mask = target_.activeMask(this->now().seconds());
+        const std::array<std::string, 4> axis_names = {"Depth", "Roll", "Pitch", "Yaw"};
+        const std::array<std::string, 4> sp_keys = {"setpoint_depth", "setpoint_roll", "setpoint_pitch", "setpoint_yaw"};
+        for (size_t i = 0; i < 4; i++) {
+            const bool now_on = (mask >> i) & 1U;
+            const bool was_on = targetManaged(i);
+            if (now_on) {
+                if (!was_on) {
+                    pids_[i].reset();
+                    RCLCPP_INFO(this->get_logger(), "Target setpoint %s: ON", axis_names[i].c_str());
+                }
+                setpoints_[i] = target_.value(static_cast<int>(i));
+            } else if (was_on) {
+                pids_[i].reset();
+                if (manual_setpoint_[i]) {
+                    setpoints_[i] = static_cast<float>(this->get_parameter(sp_keys[i]).as_double());
+                } else if (i == 0) {
+                    setpoints_[0] = current_depth_m_;
+                } else {
+                    std::array<float, 3> rpy_rads;
+                    calculateRpyFromQuaternion(current_orientation_, rpy_rads);
+                    setpoints_[i] = rpy_rads[i - 1];
+                }
+                RCLCPP_INFO(this->get_logger(),
+                    "Target setpoint %s: OFF (expired or released), back to parameters: %.4f",
+                    axis_names[i].c_str(), setpoints_[i]);
+            }
+        }
+        target_mask_ = mask;
+    }
+
     void cmdVelCallback(const nereo_interfaces::msg::CommandVelocity::SharedPtr msg) {
         if (!has_orientation_ || !has_depth_) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
@@ -578,6 +654,8 @@ private:
             return;
         }
         
+        applyTarget();
+
         // Convert command velocity to array
         std::array<float, 6> cmd_vel = {
             msg->cmd_vel[0],  // surge
@@ -686,7 +764,7 @@ private:
         
         // Updates setpoints for angles (skip axes with manual override)
         for (uint8_t i = 0; i < 3; i++) {
-            if (manual_setpoint_[i+1]) continue; // skip if manual
+            if (manual_setpoint_[i+1] || targetManaged(i+1)) continue; // skip if manual or target
             if (std::abs(cmd_vel[i+3]) < TOLERANCE) {
                 if (last_cmd_vel_neq_0_[i+1]) {
                     setpoints_[i+1] = rpy_rads[i];
@@ -700,8 +778,8 @@ private:
             }
         }
         
-        // Updates depth setpoint (skip if manual)
-        if (!manual_setpoint_[0]) {
+        // Updates depth setpoint (skip if manual or target)
+        if (!manual_setpoint_[0] && !targetManaged(0)) {
             Eigen::Vector3f z_out(0.0f, 0.0f, 1.0f);
             Eigen::Vector3f z_out_RBF = current_orientation_.inverse() * z_out;
             
@@ -737,10 +815,10 @@ private:
         }
         
         if (first_update_) {
-            if (!manual_setpoint_[0]) setpoints_[0] = current_depth_m_;
-            if (!manual_setpoint_[1]) setpoints_[1] = rpy_rads[0];
-            if (!manual_setpoint_[2]) setpoints_[2] = rpy_rads[1];
-            if (!manual_setpoint_[3]) setpoints_[3] = rpy_rads[2];
+            if (!manual_setpoint_[0] && !targetManaged(0)) setpoints_[0] = current_depth_m_;
+            if (!manual_setpoint_[1] && !targetManaged(1)) setpoints_[1] = rpy_rads[0];
+            if (!manual_setpoint_[2] && !targetManaged(2)) setpoints_[2] = rpy_rads[1];
+            if (!manual_setpoint_[3] && !targetManaged(3)) setpoints_[3] = rpy_rads[2];
             first_update_ = false;
         }
         

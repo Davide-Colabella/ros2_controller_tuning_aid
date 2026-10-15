@@ -21,6 +21,8 @@ find_package(Eigen3 REQUIRED)
 
 # Add executable
 add_executable(nereo_controller_node src/nereo_controller_node.cpp)
+target_include_directories(nereo_controller_node PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Eigen through its imported target: EIGEN3_INCLUDE_DIR is gone in Eigen 5
 target_link_libraries(nereo_controller_node Eigen3::Eigen)
 

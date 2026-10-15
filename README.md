@@ -159,6 +159,7 @@ All parameters are runtime-tunable via `ros2 param set` or the TUNER GUI.
 | `manual_setpoint_depth/roll/pitch/yaw` | `bool` | When `true`, axis uses `setpoint_*` instead of tracking the current value |
 | `setpoint_depth` | `double` | **metres**, positive down, same frame as `/barometer_depth`. Positive heave ascends (operator-confirmed sign, 04-02) |
 | `setpoint_roll/pitch/yaw` | `double` | **radians**. GUI sends them converted from degrees |
+| `target_timeout` | `double` | `0.05`–`10` s, default `0.5`: after this long without `/controller/target` messages its axes go back to the parameters (see [Setpoint topic](#setpoint-topic-controllertarget)) |
 | `cs_kx0`, `cs_kx1`, `cs_kx2` | `double[2]` | State feedback gains for heave / roll / pitch |
 | `cs_ki0`, `cs_ki1`, `cs_ki2` | `double` | Integral gains for the CS controller |
 | `cs_heave_min`, `cs_heave_max` | `double` | Saturation limits — heave |
@@ -198,7 +199,8 @@ under `install/`).
 
 | Topic | Type | Source |
 |---|---|---|
-| `/nereo_cmd_vel_no_fb` | `nereo_interfaces/CommandVelocity` | `joy_to_cmd_vel` (controller mode) |
+| `/nereo_cmd_vel_no_fb` | `nereo_interfaces/CommandVelocity` | `safety_node`: `joy_to_cmd_vel` (controller mode) in MANUAL, the mission bridge in AUTONOMOUS |
+| `/controller/target` | `std_msgs/Float64MultiArray` | mission bridge (thesis); `[depth, roll, pitch, yaw, mask]`, see below |
 | `/imu_data` | `sensor_msgs/Imu` | `imu_publisher` (RPi) |
 | `/barometer_depth` | `std_msgs/Float32` | `bar_publisher` (RPi); metres, positive down, tare-relative, best-effort |
 
@@ -210,6 +212,27 @@ under `install/`).
 | `/controller/setpoints` | `std_msgs/Float64MultiArray` | TUNER GUI | Live `[depth, roll, pitch, yaw]` setpoints |
 | `/controller/errors` | `std_msgs/Float64MultiArray` | TUNER GUI | Live error vector |
 | `/controller/pid_terms` | `std_msgs/Float64MultiArray` | TUNER GUI | Per-axis P / I / D contributions |
+
+### Setpoint topic `/controller/target`
+
+`std_msgs/Float64MultiArray` with `data = [depth, roll, pitch, yaw, mask]`:
+
+- **Values:** depth in metres (same frame as `/barometer_depth`), angles in radians, in the same order as `/controller/setpoints`.
+- **Mask:** says which axes the sender drives. Bit 0 is depth, bit 1 roll, bit 2 pitch, bit 3 yaw.
+
+How the target is applied:
+
+- **Precedence:** while the last message is younger than `target_timeout`, the masked axes take its values. The target wins over `manual_setpoint_*`/`setpoint_*` and over the stick capture.
+- **Expiry:** when the target expires, or an axis leaves the mask, that axis goes back to the parameters, resetting its PID. With `manual_setpoint_*` enabled it returns to the parameter setpoint; otherwise it holds the current measurement, as the stick capture would.
+- **Malformed messages are ignored, with a warning, and do not refresh the expiry.** That covers a wrong size, non-finite values, and a mask that is not an integer in 0..15.
+- **Without messages** the behaviour is exactly the one with the parameters alone.
+
+Used by `nereo_mission_bridge` (thesis mission software) instead of setting the parameters, which the node reads only once a second.
+
+```bash
+# depth 2.5 m and yaw 0.3 rad for 0.5 s
+ros2 topic pub --once /controller/target std_msgs/msg/Float64MultiArray "{data: [2.5, 0.0, 0.0, 0.3, 9]}"
+```
 
 ### Parameter services
 
