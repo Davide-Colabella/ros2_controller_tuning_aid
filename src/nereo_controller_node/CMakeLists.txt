@@ -58,5 +58,12 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_controller_target test/test_controller_target.cpp)
+  target_include_directories(test_controller_target PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
+
 # Package configuration
 ament_package()
