@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -446,6 +447,35 @@ class NereoControllerTester(Node):
         out = self.send_and_wait([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         self._assert_true(abs(out.cmd_vel[3]) < 0.08, f"roll should be near zero after setpoint update, got {out.cmd_vel[3]:.4f}")
 
+    def test_yaw_wrap_no_reversal(self):
+        # With the vehicle facing away from the setpoint the wrapped yaw error jumps from
+        # -pi to +pi; the incremental PID must keep turning the same way instead of adding
+        # Kp*2*pi to its output and reversing (Stonefish demo, 23/10/2026: the GOTO swung
+        # left and right around the opposite heading for 85 s).
+        self.set_params({
+            "kp": [0.0, 0.0, 0.0, 1.0],
+            "ki": [0.0, 0.0, 0.0, 0.0],
+            "kd": [0.0, 0.0, 0.0, 0.0],
+            "control_mode": 1,
+            "manual_setpoint_yaw": True,
+            "setpoint_yaw": 0.0,
+        })
+
+        def publish_yaw(yaw: float):
+            self.publish_imu(math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0))
+            self.publish_depth(0.0)
+            self.spin_for(0.2)
+
+        try:
+            publish_yaw(3.0)          # error wrap(0 - 3.0) = -3.0: turn negative
+            out = self.send_and_wait([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            self._assert_true(out.cmd_vel[5] < -0.5, f"yaw at 3.0 rad: expected a negative turn, got {out.cmd_vel[5]:.4f}")
+            publish_yaw(-3.0)         # error +3.0 after crossing pi: keep turning
+            out = self.send_and_wait([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            self._assert_true(out.cmd_vel[5] < -0.5, f"yaw past pi: the turn reversed, got {out.cmd_vel[5]:.4f}")
+        finally:
+            self.set_params({"manual_setpoint_yaw": False})
+
 
 def setup_suite(tester: NereoControllerTester):
     """Suite-wide defaults so per-test parameter sets stay minimal.
@@ -479,6 +509,7 @@ def main() -> int:
         ("mode_change_resets_integrator", tester.test_mode_change_resets_integrator),
         ("invalid_mode_passthrough", tester.test_invalid_mode_passthrough),
         ("setpoint_update_on_zero_command", tester.test_setpoint_update_on_zero_command),
+        ("yaw_wrap_no_reversal", tester.test_yaw_wrap_no_reversal),
     ]
 
     results: List[TestResult] = []

@@ -45,6 +45,11 @@ class ControlSystem
         float ErrorIntegral;
 };
 
+// Angle difference brought back to [-pi, pi]
+static float wrap_angle_difference(float d) {
+    return std::remainder(d, 2.0f * static_cast<float>(M_PI));
+}
+
 // Define PID controller struct to match arm_pid_instance_f32
 struct PidController {
     float A0;          // The derived gain, A0 = Kp + Ki + Kd
@@ -54,12 +59,22 @@ struct PidController {
     float Kp;          // The proportional gain
     float Ki;          // The integral gain
     float Kd;          // The derivative gain
+    // Angular axis (roll, pitch, yaw): the error is wrapped to [-pi, pi], so it jumps by
+    // 2*pi when it crosses +-pi; the incremental form would add Kp*2*pi to the output and
+    // reverse the turn at every crossing. The differences are wrapped as well.
+    bool angular = false;
 
     // Computes output and exposes incremental P/I/D contributions used at this step.
     float computeWithTerms(float error, float & p_term, float & i_term, float & d_term) {
-        p_term = Kp * (error - state[0]);
+        float d1 = error - state[0];      // x[n] - x[n-1]
+        float d0 = state[0] - state[1];   // x[n-1] - x[n-2]
+        if (angular) {
+            d1 = wrap_angle_difference(d1);
+            d0 = wrap_angle_difference(d0);
+        }
+        p_term = Kp * d1;
         i_term = Ki * error;
-        d_term = Kd * (error - 2.0f * state[0] + state[1]);
+        d_term = Kd * (d1 - d0);
 
         float out = state[2] + p_term + i_term + d_term;
 
@@ -105,6 +120,11 @@ public:
     };
 
     NereoControllerNode() : Node("nereo_controller_node") {
+        // depth, roll, pitch, yaw: the last three are angles
+        for (int i = 1; i < PID_NUMBER; ++i) {
+            pids_[i].angular = true;
+        }
+
         // Initialize parameters
         this->declare_parameter("control_mode", 0);
         this->declare_parameter("kp", std::vector<double>{0.0, 0.0, 0.0, 0.0});
